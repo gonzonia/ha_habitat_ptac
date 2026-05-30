@@ -30,34 +30,23 @@ async def async_setup_entry(
 
     entities = []
     for device in devices:
-        entities.append(
-            HabitatBatterySensor(
-                mqtt_client,
-                device["thing_name"],
-                device["name"],
-            )
-        )
+        entities.append(HabitatBatterySensor(mqtt_client, device["thing_name"], device["name"]))
+        entities.append(HabitatRunningStateSensor(mqtt_client, device["thing_name"], device["name"]))
+        entities.append(HabitatErrorCodeSensor(mqtt_client, device["thing_name"], device["name"]))
 
     async_add_entities(entities)
 
 
-class HabitatBatterySensor(SensorEntity):
-    """Representation of a Habitat PTAC Battery Sensor."""
-
+class HabitatBaseSensor(SensorEntity):
+    """Base class for Habitat sensors to handle MQTT updates and Device Info."""
     _attr_has_entity_name = True
-    _attr_name = "Battery"
-    _attr_device_class = SensorDeviceClass.BATTERY
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = PERCENTAGE
 
     def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
         """Initialize the sensor."""
         self._mqtt_client = mqtt_client
         self._thing_name = thing_name
-        self._device_name = device_name
         self._props = {}
         
-        self._attr_unique_id = f"{thing_name}_battery"
         parts = thing_name.split("-")
         model_name = parts[2] if len(parts) >= 3 else "Habitat PTAC"
         
@@ -79,33 +68,73 @@ class HabitatBatterySensor(SensorEntity):
 
         short_id = self._thing_name.split("-")[1] if "-" in self._thing_name else self._thing_name[-12:]
         event_name = f"{DOMAIN}_state_update_{short_id}"
-        self.async_on_remove(
-            self.hass.bus.async_listen(event_name, _handle_update)
-        )
-        
-        # Trigger initial update immediately
+        self.async_on_remove(self.hass.bus.async_listen(event_name, _handle_update))
         _handle_update()
+
+
+class HabitatBatterySensor(HabitatBaseSensor):
+    """Representation of a Habitat PTAC Battery Sensor."""
+    _attr_name = "Battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
+        super().__init__(mqtt_client, thing_name, device_name)
+        self._attr_unique_id = f"{thing_name}_battery"
 
     @property
     def native_value(self) -> int | None:
-        """Return the current battery percentage."""
         if not self._props:
             return None
-            
         batt_raw = self._props.get("ep0:sPTAC868:BatteryVoltage_x10")
         if batt_raw is None:
             return None
-            
         try:
-            # Explicitly cast to float to prevent TypeErrors, divide by 100 for true voltage
             voltage = float(batt_raw) / 100.0
-            
-            # Map 2 AA batteries: 3.0V is 100%, 2.0V is 0%
             percentage = ((voltage - 2.0) / (3.0 - 2.0)) * 100
-            
             return max(0, min(100, round(percentage)))
-            
-        except Exception as err:
-            _LOGGER.error("Battery math error on %s: %s", self._thing_name, err)
+        except Exception:
             return None
-    
+
+
+class HabitatRunningStateSensor(HabitatBaseSensor):
+    """Representation of the PTAC Running State."""
+    _attr_name = "Running State"
+    _attr_icon = "mdi:hvac"
+
+    def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
+        super().__init__(mqtt_client, thing_name, device_name)
+        self._attr_unique_id = f"{thing_name}_running_state"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self._props:
+            return None
+        state = self._props.get("ep0:sPTAC868:RunningState")
+        if state is None:
+            return None
+        # We output the raw number + descriptive text. You can adjust this as you observe 
+        # what numbers it outputs when heating (likely 1 or 2) vs cooling.
+        if state == 0:
+            return "Idle"
+        return f"Active ({state})"
+
+
+class HabitatErrorCodeSensor(HabitatBaseSensor):
+    """Representation of the PTAC Error Code."""
+    _attr_name = "Error Code"
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
+        super().__init__(mqtt_client, thing_name, device_name)
+        self._attr_unique_id = f"{thing_name}_error_code"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self._props:
+            return None
+        error = self._props.get("ep0:sPTAC868:PTACErrorCode")
+        if error == 0:
+            return "OK"
+        return f"Error Code: {error}" if error is not None else None
