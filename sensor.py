@@ -9,7 +9,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -33,6 +33,8 @@ async def async_setup_entry(
         entities.append(HabitatBatterySensor(mqtt_client, device["thing_name"], device["name"]))
         entities.append(HabitatRunningStateSensor(mqtt_client, device["thing_name"], device["name"]))
         entities.append(HabitatErrorCodeSensor(mqtt_client, device["thing_name"], device["name"]))
+        entities.append(HabitatFilterLifeSensor(mqtt_client, device["thing_name"], device["name"]))
+        entities.append(HabitatFilterRunSensor(mqtt_client, device["thing_name"], device["name"]))
 
     async_add_entities(entities)
 
@@ -92,7 +94,9 @@ class HabitatBatterySensor(HabitatBaseSensor):
             return None
         try:
             voltage = float(batt_raw) / 100.0
-            percentage = ((voltage - 2.0) / (3.0 - 2.0)) * 100
+            max_v = 3.2
+            min_v = 2.0
+            percentage = ((voltage - min_v) / (max_v - min_v) * 100
             return max(0, min(100, round(percentage)))
         except Exception:
             return None
@@ -114,8 +118,6 @@ class HabitatRunningStateSensor(HabitatBaseSensor):
         state = self._props.get("ep0:sPTAC868:RunningState")
         if state is None:
             return None
-        # We output the raw number + descriptive text. You can adjust this as you observe 
-        # what numbers it outputs when heating (likely 1 or 2) vs cooling.
         if state == 0:
             return "Idle"
         return f"Active ({state})"
@@ -138,3 +140,38 @@ class HabitatErrorCodeSensor(HabitatBaseSensor):
         if error == 0:
             return "OK"
         return f"Error Code: {error}" if error is not None else None
+
+
+class HabitatFilterLifeSensor(HabitatBaseSensor):
+    """Representation of the total filter lifespan setting."""
+    _attr_name = "Filter Lifespan"
+    _attr_icon = "mdi:filter-outline"
+    _attr_native_unit_of_measurement = UnitOfTime.DAYS
+
+    def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
+        super().__init__(mqtt_client, thing_name, device_name)
+        self._attr_unique_id = f"{thing_name}_filter_life"
+
+    @property
+    def native_value(self) -> int | None:
+        if not self._props:
+            return None
+        return self._props.get("ep0:sPTAC868:FilterDays")
+
+
+class HabitatFilterRunSensor(HabitatBaseSensor):
+    """Representation of how many days the current filter has run."""
+    _attr_name = "Filter Usage"
+    _attr_icon = "mdi:filter-cog-outline"
+    _attr_native_unit_of_measurement = UnitOfTime.DAYS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, mqtt_client: HabitatMQTTClient, thing_name: str, device_name: str) -> None:
+        super().__init__(mqtt_client, thing_name, device_name)
+        self._attr_unique_id = f"{thing_name}_filter_run"
+
+    @property
+    def native_value(self) -> int | None:
+        if not self._props:
+            return None
+        return self._props.get("ep0:sPTAC868:FilterRunDays")
