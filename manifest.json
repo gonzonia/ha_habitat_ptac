@@ -1,0 +1,13 @@
+{
+  "domain": "habitat_ptac",
+  "name": "Habitat PTAC",
+  "version": "0.1.0",
+  "config_flow": true,
+  "dependencies": [],
+  "requirements": [
+    "pycognito>=2024.5.1",
+    "boto3>=1.34.0"
+  ],
+  "codeowners": [],
+  "iot_class": "cloud_push"
+}
