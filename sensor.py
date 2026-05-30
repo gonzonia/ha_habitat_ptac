@@ -94,10 +94,11 @@ class HabitatBatterySensor(HabitatBaseSensor):
             return None
         try:
             voltage = float(batt_raw) / 100.0
-            max_v = 3.2
+            max_v = 2.25
             min_v = 2.0
             percentage = ((voltage - min_v) / (max_v - min_v)) * 100
             return max(0, min(100, round(percentage)))
+            #return batt_raw
         except Exception:
             return None
 
