@@ -251,16 +251,27 @@ class HabitatMQTTClient:
             properties = data.get("properties", {})
 
             if properties:
-                # INJECT connection statuses directly into the properties dictionary
-                properties["_cloud_conn"] = reported.get("cloud_conn", 1)
-                properties["_node_conn"] = reported.get("node_conn", 1)
-                properties["_connected"] = str(reported.get("connected", "true")).lower()
+                # 1. Grab everything we already know about the device from memory
                 previous_state = self._device_states.get(thing_name, {})
+                
+                # 2. Inject statuses (fallback to previous state if AWS didn't send them this time)
+                properties["_cloud_conn"] = reported.get("cloud_conn", previous_state.get("_cloud_conn", 1))
+                properties["_node_conn"] = reported.get("node_conn", previous_state.get("_node_conn", 1))
+                properties["_connected"] = str(reported.get("connected", previous_state.get("_connected", "true"))).lower()
                 properties["_model"] = data.get("model", previous_state.get("_model", "Habitat PTAC"))
                 
-                self._device_states[thing_name] = properties
+                # 3. THE FIX: Merge the new incoming delta properties into our existing memory cache!
+                previous_state.update(properties)
                 
-                self._state_callback(thing_name, properties)
+                # 4. Save the fully merged dictionary back to memory
+                self._device_states[thing_name] = previous_state
+                
+                # 5. Send the complete dictionary to Home Assistant
+                self._state_callback(thing_name, previous_state)
+                
+                #self._device_states[thing_name] = properties
+                
+                #self._state_callback(thing_name, properties)
                 
         except Exception as err:
             _LOGGER.error("Error handling MQTT message: %s", err)

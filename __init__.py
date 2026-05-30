@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.device_registry import DeviceEntry
 
 from .auth import get_aws_credentials, refresh_tokens
 from .const import (
@@ -95,3 +96,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await hass.async_add_executor_job(data["mqtt_client"].disconnect)
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow the user to delete a device from the UI."""
+    _LOGGER.info("User requested to delete device: %s", device_entry.name)
+    
+    # Returning True tells Home Assistant it has permission to wipe the 
+    # device (and all of its attached entities) from the registry.
+    return True
