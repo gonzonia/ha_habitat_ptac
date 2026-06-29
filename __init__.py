@@ -7,6 +7,7 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.device_registry import DeviceEntry
 
@@ -32,9 +33,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     refresh_token = entry.data[CONF_REFRESH_TOKEN]
     devices = entry.data[CONF_DEVICES]
 
-    id_token, _ = await hass.async_add_executor_job(
-        refresh_tokens, username, refresh_token
-    )
+    try:
+        id_token, _ = await hass.async_add_executor_job(
+            refresh_tokens, username, refresh_token
+        )
+    except Exception as err:
+        if "NotAuthorizedException" in str(err) or "Refresh Token has expired" in str(err):
+            raise ConfigEntryAuthFailed("Refresh token expired — please re-authenticate") from err
+        raise
     credentials = await hass.async_add_executor_job(
         get_aws_credentials, identity_id, id_token
     )
@@ -74,7 +80,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await hass.async_add_executor_job(mqtt_client.reconnect, new_credentials)
             _LOGGER.info("Refreshed AWS IoT credentials for %s", username)
         except Exception as err:
-            _LOGGER.error("Failed to refresh credentials: %s", err)
+            if "NotAuthorizedException" in str(err) or "Refresh Token has expired" in str(err):
+                _LOGGER.warning("Refresh token expired — triggering re-authentication")
+                entry.async_start_reauth(hass)
+            else:
+                _LOGGER.error("Failed to refresh credentials: %s", err)
 
     entry.async_on_unload(
         async_track_time_interval(
