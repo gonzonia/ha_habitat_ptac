@@ -9,9 +9,11 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACAction,
     HVACMode,
+    ATTR_HVAC_MODE,
+    ATTR_TEMPERATURE
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -23,7 +25,6 @@ from .const import (
     HA_TO_DEVICE_MODE,
     RUNNING_STATE_ACTIVE,
     TEMP_MULTIPLIER,
-    DOMAIN,
 )
 from .mqtt_client import HabitatMQTTClient
 
@@ -105,6 +106,7 @@ class HabitatClimate(ClimateEntity):
             "manufacturer": "Habitat",
             "model": model_name,
         }
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -115,12 +117,10 @@ class HabitatClimate(ClimateEntity):
         @callback
         def _handle_update(_event) -> None:
             self.async_write_ha_state()
-	
-        # Generate the matching short event name
+
         short_id = self._thing_name.split("-")[1] if "-" in self._thing_name else self._thing_name[-12:]
         event_name = f"{DOMAIN}_state_update_{short_id}"
 
-        # Register listener and automatically handle cleanup on removal
         self.async_on_remove(
             self.hass.bus.async_listen(event_name, _handle_update)
         )
@@ -153,12 +153,7 @@ class HabitatClimate(ClimateEntity):
     @property
     def hvac_action(self) -> HVACAction | None:
         """Return the current running action based on RunningState and Mode."""
-        
-        # REPLACE "_properties" with whatever variable your current_temperature uses!
-        # (e.g., if you use self._state, change it to "_state")
-        data = getattr(self, "_props", {})
-        
-        running_state = data.get("ep0:sPTAC868:RunningState", 0)
+        running_state = self._props.get("ep0:sPTAC868:RunningState", 0)
         
         if running_state > 0:
             if self.hvac_mode == HVACMode.COOL:
@@ -173,18 +168,18 @@ class HabitatClimate(ClimateEntity):
     @property
     def target_temperature(self) -> float | None:
         mode = self.hvac_mode
-        #-----------Heating and cooling settings are reversed for some unkown reason
-        heatpoint = self._props.get("ep0:sPTAC868:HeatingSetpoint_x100")
-        coolpoint = self._props.get("ep0:sPTAC868:CoolingSetpoint_x100")
-        if mode == HVACMode.HEAT:
-            val = coolpoint
-        elif mode == HVACMode.COOL:
-            val = heatpoint
-        else:
+        
+        # Hide target temperature if the unit is OFF or in FAN_ONLY
+        if mode not in (HVACMode.HEAT, HVACMode.COOL):
             return None
+            
+        # The device uses HeatingSetpoint_x100 as the universal master setpoint
+        val = self._props.get("ep0:sPTAC868:HeatingSetpoint_x100")
+        
         if val is not None:
-            _LOGGER.debug("Heating Setpoint is %s, Cooling Setpoint is %s -  mode %s", heatpoint, coolpoint, mode)
+            _LOGGER.debug("Target Setpoint (via HeatingSetpoint) is %s - mode %s", val, mode)
             return _c_to_f(val / TEMP_MULTIPLIER)
+            
         return None
 
     @property
@@ -193,21 +188,17 @@ class HabitatClimate(ClimateEntity):
         if val is not None:
             return DEVICE_TO_HA_FAN.get(val)
         return None
-        
+
     @property
     def available(self) -> bool:
         """Return True if the entity is fully connected to the cloud and gateway."""
-        # If no properties have loaded yet, it's unavailable
-        data = getattr(self, "_props", {})
-        if not data:
+        if not self._props:
             return False
             
-        # Extract the connection statuses we injected in mqtt_client.py
-        cloud_conn = data.get("_cloud_conn", 1)
-        node_conn = data.get("_node_conn", 1)
-        connected = data.get("_connected", "true")
+        cloud_conn = self._props.get("_cloud_conn", 1)
+        node_conn = self._props.get("_node_conn", 1)
+        connected = self._props.get("_connected", "true")
         
-        # If the gateway lost AWS connection OR the thermostat lost Zigbee link
         if cloud_conn == 0 or connected == "false" or node_conn == 0:
             return False
             
@@ -217,26 +208,19 @@ class HabitatClimate(ClimateEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes like battery level and connection status."""
         attrs = {}
-        data = getattr(self, "_props", {})
-        
-        if data:
-            batt_x10 = data.get("ep0:sPTAC868:BatteryVoltage_x10")
+        if self._props:
+            batt_x10 = self._props.get("ep0:sPTAC868:BatteryVoltage_x10")
             if batt_x10 is not None:
                 batt_calc = batt_x10 / 100.0 
                 attrs["battery_voltage"] = batt_calc 
                 
-            # Convert the raw 1/0 integers into friendly strings
-            cloud_conn = data.get("_cloud_conn", 1)
-            node_conn = data.get("_node_conn", 1)
-            cloud_bln = bool(cloud_conn == 1)
-            node_bln = bool(node_conn == 1)
+            cloud_conn = self._props.get("_cloud_conn", 1)
+            node_conn = self._props.get("_node_conn", 1)
             attrs["cloud_connected"] = bool(cloud_conn == 1)
             attrs["node_connected"] = bool(node_conn == 1)
-            _LOGGER.debug("Battery is %s, cloud is %s,  node is %s", batt_calc, cloud_bln, node_bln)
+            _LOGGER.debug("Battery is %s, cloud is %s, node is %s", batt_calc if batt_x10 is not None else None, attrs.get("cloud_connected"), attrs.get("node_connected"))
             
         return attrs
-    
-
 
     # ------------------------------------------------------------------
     # Commands
@@ -254,29 +238,20 @@ class HabitatClimate(ClimateEntity):
             {"ep0:sPTAC868:SetSystemMode": device_mode},
         )
 
-    async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set the target temperature."""
-        temp_f = kwargs.get(ATTR_TEMPERATURE)
-        if temp_f is None:
+    async def async_set_temperature(self, **kwargs) -> None:
+        """Set new target temperature."""
+        if (temp := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
 
-        temp_device = round(_f_to_c(temp_f) * TEMP_MULTIPLIER)
-        mode = self.hvac_mode
-    #-----------Heating and cooling settings are reversed for some unkown reason
-        if mode == HVACMode.HEAT:
-            prop = "ep0:sPTAC868:SetCoolingSetpoint_x100"            
-        elif mode == HVACMode.COOL:
-            prop = "ep0:sPTAC868:SetHeatingSetpoint_x100"
-        else:
-            _LOGGER.warning(
-                "Cannot set temperature when mode is %s", mode
-            )
-            return
+        # Convert target °F to °C x100
+        temp_c = _f_to_c(temp)
+        temp_x100 = int(round(temp_c * TEMP_MULTIPLIER))
 
+        # The device strictly requires SetHeatingSetpoint_x100 for all temperature changes
         await self.hass.async_add_executor_job(
             self._mqtt_client.publish_command,
             self._thing_name,
-            {prop: temp_device},
+            {"ep0:sPTAC868:SetHeatingSetpoint_x100": temp_x100},
         )
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
